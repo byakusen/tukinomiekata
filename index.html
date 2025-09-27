@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>月の満ち欠け：ドラッグ体感＋クイズ</title>
+  <style>
+    :root{
+      --bg:#f7fafc; --ink:#111827; --sub:#4b5563; --moon-dark:#0b1220; --moon-light:#ffbf00;
+      --ring:#e5e7eb; --card:#ffffff;
+    }
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,'Noto Sans JP',sans-serif}
+    header{padding:12px 16px;background:#fff;border-bottom:1px solid var(--ring)}
+    header h1{margin:0;font-size:18px}
+    header p{margin:4px 0 0;color:var(--sub);font-size:12px}
+    #modeBtns{display:flex;gap:8px;justify-content:center;padding:10px;background:#fff;border-bottom:1px solid var(--ring)}
+    #modeBtns button{padding:8px 14px;font-size:14px;border:1px solid var(--ring);border-radius:8px;background:#fff;cursor:pointer}
+    #modeBtns button.active{background:#111827;color:#fff}
+
+    #containerSim,#containerQuiz,#containerPlace{display:grid;grid-template-columns:2fr 1fr;gap:12px;max-width:1200px;margin:12px auto;padding:0 12px}
+    @media (max-width:900px){#containerSim,#containerQuiz,#containerPlace{grid-template-columns:1fr}}
+    .pane{background:var(--card);border:1px solid var(--ring);border-radius:12px;min-height:70vh;position:relative;overflow:hidden}
+    canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+    .title{position:absolute;top:36px;left:50%;transform:translateX(-50%);font-weight:700;font-size:18px;z-index:10}
+    #controls{margin:10px;text-align:center}
+    #controls button, .barBtn{padding:6px 12px;margin:4px;font-size:14px;border:1px solid var(--ring);border-radius:8px;background:#fff;cursor:pointer}
+
+    /* 色ぬり問題（既存） */
+    #quizControls{display:flex;gap:8px;justify-content:center;align-items:center;margin:8px 0;position:absolute;bottom:10px;left:0;right:0}
+    #judgeMark{position:absolute;right:16px;top:16px;font-size:56px;font-weight:700;opacity:.9;z-index:20}
+
+    /* 位置あて問題 */
+    #placeJudge{position:absolute;right:16px;top:16px;font-size:56px;font-weight:700;opacity:.9;z-index:20}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>月の満ち欠け：ドラッグで体感シミュレーター</h1>
+    <p>太陽は<strong>右固定</strong>（光は<strong>右→左</strong>）。左の円周上の月をドラッグすると、右のプレビューが地球からの見え方になります。</p>
+  </header>
+
+  <!-- 表示切替ボタン -->
+  <div id="modeBtns">
+    <button id="btnSim" class="active">シミュレーター</button>
+    <button id="btnPaint" class="barBtn">色ぬり問題</button>
+    <button id="btnPlace" class="barBtn">位置あて問題</button>
+  </div>
+
+  <!-- 共通：カバー表示 -->
+  <div id="controls"><button id="toggleCover" class="barBtn">カバー表示</button></div>
+
+  <!-- 1) シミュレーター（既存） -->
+  <main id="containerSim">
+    <section class="pane"><canvas id="scene"></canvas></section>
+    <section class="pane"><div class="title">【月の見え方】</div><canvas id="phase"></canvas></section>
+  </main>
+
+  <!-- 2) 色ぬり問題（既存） -->
+  <main id="containerQuiz" style="display:none">
+    <section class="pane"><canvas id="qScene"></canvas></section>
+    <section class="pane">
+      <div class="title">【月の見え方（クリックでぬる）】</div>
+      <div id="judgeMark"></div>
+      <canvas id="qAnswer"></canvas>
+      <div id="quizControls">
+        <button id="btnJudge" class="barBtn">判定</button>
+        <button id="btnNext" class="barBtn">次へ</button>
+      </div>
+    </section>
+  </main>
+
+  <!-- 3) 位置あて問題（新規追加） -->
+  <main id="containerPlace" style="display:none">
+    <section class="pane"><canvas id="pScene"></canvas></section>
+    <section class="pane">
+      <div class="title">【月の見え方】</div>
+      <div id="placeJudge"></div>
+      <canvas id="pPhase"></canvas>
+    </section>
+  </main>
+
+<script>
+(function(){
+  function ready(fn){ if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',fn,{once:true}); else fn(); }
+  ready(init);
+
+  function init(){
+    // ======= 切替ボタン =======
+    const btnSim   = document.getElementById('btnSim');
+    const btnPaint = document.getElementById('btnPaint');
+    const btnPlace = document.getElementById('btnPlace');
+    const simWrap   = document.getElementById('containerSim');
+    const quizWrap  = document.getElementById('containerQuiz');
+    const placeWrap = document.getElementById('containerPlace');
+
+    function setMode(mode){
+      const isSim   = mode==='sim';
+      const isPaint = mode==='paint';
+      const isPlace = mode==='place';
+      simWrap.style.display   = isSim   ? 'grid':'none';
+      quizWrap.style.display  = isPaint ? 'grid':'none';
+      placeWrap.style.display = isPlace ? 'grid':'none';
+      btnSim.classList.toggle('active',isSim);
+      btnPaint.classList.toggle('active',isPaint);
+      btnPlace.classList.toggle('active',isPlace);
+      resizeAll();
+    }
+    btnSim.addEventListener('click', ()=>setMode('sim'));
+    btnPaint.addEventListener('click',()=>setMode('paint'));
+    btnPlace.addEventListener('click',()=>setMode('place'));
+
+    // ======= 共通：カバー表示 =======
+    const btnCover=document.getElementById('toggleCover');
+    let showCover=true;
+    btnCover.addEventListener('click',()=>{showCover=!showCover; drawAll(); drawQuizScene(); drawAnswer(); drawPlaceScene(); drawPlacePhase();});
+
+    // ======= 共通で使う関数 =======
+    function fitCanvas(c){const dpr=Math.max(1,window.devicePixelRatio||1);const r=c.getBoundingClientRect();const w=Math.max(1,Math.round(r.width)),h=Math.max(1,Math.round(r.height)); if(c.width!==w*dpr) c.width=w*dpr; if(c.height!==h*dpr) c.height=h*dpr; const ctx=c.getContext('2d'); ctx.setTransform(dpr,0,0,dpr,0,0); return ctx;}
+    function parseColor(css){ if(css.startsWith('#')){const r=parseInt(css.slice(1,3),16),g=parseInt(css.slice(3,5),16),b=parseInt(css.slice(5,7),16); return [r,g,b];} const m=css.match(/rgba?\((\d+),(\d+),(\d+)\)/); if(m) return [parseInt(m[1]),parseInt(m[2]),parseInt(m[3])]; return [255,255,255]; }
+
+    // 地球テクスチャ
+    const earthGen=document.createElement('canvas'); let earthReady=false;
+    function rngMulberry32(a){return function(){let t=a+=0x6D2B79F5;t=Math.imul(t^t>>>15,t|1);t^=t+Math.imul(t^t>>>7,t|61);return((t^t>>>14)>>>0)/4294967296;};}
+    function rr(rng,min,max){return min+(max-min)*rng();}
+    function genEarth(size=512,seed=20250927){
+      earthGen.width=earthGen.height=size; const g=earthGen.getContext('2d'); const cx=size/2,cy=size/2,R=size*0.48;
+      g.clearRect(0,0,size,size);
+      const ocean=g.createRadialGradient(cx-0.15*R,cy-0.15*R,R*0.2,cx,cy,R); ocean.addColorStop(0,'#9AD0F0'); ocean.addColorStop(1,'#5AA7D9');
+      g.fillStyle=ocean; g.beginPath(); g.arc(cx,cy,R,0,Math.PI*2); g.fill();
+      const rng=rngMulberry32(seed|0); g.save(); g.beginPath(); g.arc(cx,cy,R,0,Math.PI*2); g.clip();
+      for(let k=0;k<14;k++){
+        const n=6+Math.floor(rng()*6); g.beginPath();
+        let ang=rng()*Math.PI*2; let r=rr(rng,R*0.15,R*0.45); let x=cx+Math.cos(ang)*r, y=cy+Math.sin(ang)*r; g.moveTo(x,y);
+        for(let i=0;i<n;i++){ ang+=rr(rng,-1.2,1.2); r=rr(rng,R*0.1,R*0.5); x=cx+Math.cos(ang)*r; y=cy+Math.sin(ang)*r; g.bezierCurveTo(x,y,x,y,x,y); }
+        const land=g.createLinearGradient(0,0,size,size); land.addColorStop(0,'#A7C66B'); land.addColorStop(1,'#7BAA4B'); g.fillStyle=land; g.globalAlpha=.9; g.fill(); g.globalAlpha=1;
+      }
+      g.lineWidth=Math.max(1,size*0.012); g.strokeStyle='#2F3B2C'; g.beginPath(); g.arc(cx,cy,R,0,Math.PI*2); g.stroke(); g.restore(); earthReady=true;
+    }
+    genEarth();
+    function drawEarth(ctx,cx,cy,r){ if(!earthReady) return; ctx.drawImage(earthGen,cx-r,cy-r,r*2,r*2); }
+    const SUN_DIR=0; // 光は右→左
+
+    function drawSunRight(ctx,w,h){
+      const slice=Math.max(40,w*0.09); const R=Math.min(w,h)*0.55; const cx=w-slice+R; const cy=h/2;
+      ctx.save(); ctx.translate(cx,cy); ctx.scale(-1,1);
+      const glow=ctx.createRadialGradient(0,0,R*0.90,0,0,R*1.30); glow.addColorStop(0,'rgba(255,165,0,0.38)'); glow.addColorStop(1,'rgba(255,69,0,0)');
+      ctx.fillStyle=glow; ctx.beginPath(); ctx.arc(0,0,R*1.30,-Math.PI/2,Math.PI/2); ctx.lineTo(0,0); ctx.closePath(); ctx.fill();
+      const body=ctx.createRadialGradient(-R*0.25,-R*0.25,R*0.12,0,0,R); body.addColorStop(0,'#FFD27A'); body.addColorStop(1,'#E07A2D');
+      ctx.fillStyle=body; ctx.beginPath(); ctx.arc(0,0,R,-Math.PI/2,Math.PI/2); ctx.lineTo(0,0); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle='#0f172a'; ctx.lineWidth=Math.max(1,Math.min(w,h)*0.0035); ctx.setLineDash([]); ctx.beginPath(); ctx.arc(0,0,R,-Math.PI/2,Math.PI/2); ctx.stroke();
+      ctx.restore();
+    }
+    function drawMoon(ctxM,x,y,r,delta){
+      const lightCSS=getComputedStyle(document.documentElement).getPropertyValue('--moon-light').trim();
+      const darkCSS=getComputedStyle(document.documentElement).getPropertyValue('--moon-dark').trim();
+      const[Lr,Lg,Lb]=parseColor(lightCSS),[Dr,Dg,Db]=parseColor(darkCSS);
+      const size=Math.max(2,Math.ceil(r*2)); const off=document.createElement('canvas'); off.width=off.height=size; const o=off.getContext('2d');
+      const img=o.createImageData(size,size); const d=img.data; const dShift=delta-Math.PI/2; const cosD=Math.cos(dShift),sinD=Math.sin(dShift); const gamma=0.5;
+      for(let j=0;j<size;j++){
+        for(let i=0;i<size;i++){
+          const nx=(i+0.5-size/2)/(size/2), ny=(j+0.5-size/2)/(size/2); const r2=nx*nx+ny*ny; const idx=(j*size+i)*4;
+          if(r2<=1){ const nz=Math.sqrt(1-r2); const illum=nx*cosD+nz*sinD; let t=0; if(illum>0) t=Math.pow(illum,gamma); d[idx]=Dr+(Lr-Dr)*t; d[idx+1]=Dg+(Lg-Dg)*t; d[idx+2]=Db+(Lb-Db)*t; d[idx+3]=255; } else { d[idx+3]=0; }
+        }
+      }
+      o.putImageData(img,0,0); ctxM.drawImage(off,x-r,y-r); ctxM.setLineDash([]); ctxM.strokeStyle=darkCSS; ctxM.lineWidth=1; ctxM.beginPath(); ctxM.arc(x,y,r,0,Math.PI*2); ctxM.stroke();
+    }
+    function drawMoonBinary(ctxB,x,y,r){
+      const lightCSS=getComputedStyle(document.documentElement).getPropertyValue('--moon-light').trim();
+      const darkCSS=getComputedStyle(document.documentElement).getPropertyValue('--moon-dark').trim();
+      ctxB.beginPath(); ctxB.arc(x,y,r,0,Math.PI*2); ctxB.fillStyle=darkCSS; ctxB.fill();
+      ctxB.beginPath(); ctxB.moveTo(x,y); ctxB.arc(x,y,r,-Math.PI/2,Math.PI/2); ctxB.closePath(); ctxB.fillStyle=lightCSS; ctxB.fill();
+      ctxB.setLineDash([]); ctxB.strokeStyle=darkCSS; ctxB.lineWidth=1; ctxB.beginPath(); ctxB.arc(x,y,r,0,Math.PI*2); ctxB.stroke();
+    }
+
+    // ===== 1) シミュレーター（既存） =====
+    const scene=document.getElementById('scene');
+    const phase=document.getElementById('phase');
+    let ctx=fitCanvas(scene), pctx=fitCanvas(phase);
+    new ResizeObserver(()=>{ctx=fitCanvas(scene); pctx=fitCanvas(phase); drawAll();}).observe(scene);
+    new ResizeObserver(()=>{ctx=fitCanvas(scene); pctx=fitCanvas(phase); drawAll();}).observe(phase);
+
+    function geom(){const r=scene.getBoundingClientRect(); const w=Math.max(1,r.width),h=Math.max(1,r.height); const cx=w/2,cy=h/2; const R=Math.min(w,h)*0.32; const earthR=Math.min(w,h)*0.16; const moonR=Math.min(w,h)*0.040; return {w,h,cx,cy,R,earthR,moonR};}
+    function pointerToAngle(x,y){ const g=geom(); const rect=scene.getBoundingClientRect(); const dx=x-rect.left-g.cx; const dy=y-rect.top-g.cy; return Math.atan2(-dy,dx); }
+    let theta=SUN_DIR+0.5; // 初期角
+
+    function drawScene(){
+      const g=geom(); const{w,h,cx,cy,R,earthR,moonR}=g; ctx.clearRect(0,0,w,h);
+      const bg=ctx.createLinearGradient(0,0,0,h); bg.addColorStop(0,'#ffffff'); bg.addColorStop(1,'#f3f4f6'); ctx.fillStyle=bg; ctx.fillRect(0,0,w,h);
+      drawSunRight(ctx,w,h);
+      // 軌道：黒
+      ctx.strokeStyle='#000'; ctx.lineWidth=1.5; ctx.setLineDash([]); ctx.beginPath(); ctx.arc(cx,cy,R,0,Math.PI*2); ctx.stroke();
+      drawEarth(ctx,cx,cy,earthR);
+      const m={x:cx+R*Math.cos(theta), y:cy-R*Math.sin(theta)}; drawMoonBinary(ctx,m.x,m.y,moonR);
+      if(showCover){ ctx.beginPath(); ctx.arc(cx,cy,R+moonR*1.2,0,Math.PI*2); ctx.strokeStyle='rgba(0,0,0,0.4)'; ctx.lineWidth=moonR*2.2; ctx.stroke(); }
+      // 矢印（地球→月）
+      const head=10, shorten=moonR+6; const dx=m.x-cx, dy=m.y-cy; const dist=Math.hypot(dx,dy)||1;
+      const ex=cx+dx*(dist-shorten)/dist, ey=cy+dy*(dist-shorten)/dist; const ang=Math.atan2(ey-cy,ex-cx);
+      ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(ex,ey);
+      ctx.lineTo(ex-head*Math.cos(ang-Math.PI/6), ey-head*Math.sin(ang-Math.PI/6));
+      ctx.moveTo(ex,ey);
+      ctx.lineTo(ex-head*Math.cos(ang+Math.PI/6), ey-head*Math.sin(ang+Math.PI/6));
+      ctx.strokeStyle='red'; ctx.lineWidth=2; ctx.stroke();
+    }
+    function drawPhase(){
+      const r=phase.getBoundingClientRect(); const w=Math.max(1,r.width),h=Math.max(1,r.height);
+      pctx.clearRect(0,0,w,h);
+      const bg=pctx.createLinearGradient(0,0,0,h); bg.addColorStop(0,'#e5e7eb'); bg.addColorStop(1,'#ffffff'); pctx.fillStyle=bg; pctx.fillRect(0,0,w,h);
+      const R=Math.min(w,h)*0.34; const cx=w/2, cy=h/2; drawMoon(pctx,cx,cy,R, (theta-SUN_DIR)%(Math.PI*2) );
+    }
+    function drawAll(){ drawScene(); drawPhase(); }
+
+    let dragging=false;
+    scene.addEventListener('pointerdown',e=>{dragging=true;scene.setPointerCapture?.(e.pointerId); theta=pointerToAngle(e.clientX,e.clientY); drawAll();});
+    scene.addEventListener('pointermove',e=>{if(!dragging)return; theta=pointerToAngle(e.clientX,e.clientY); drawAll();});
+    scene.addEventListener('pointerup',e=>{dragging=false; try{scene.releasePointerCapture?.(e.pointerId);}catch{}});
+    scene.addEventListener('pointercancel',()=>dragging=false);
+
+    requestAnimationFrame(()=>{ctx=fitCanvas(scene); pctx=fitCanvas(phase); drawAll();});
+
+    // ===== 2) 色ぬり問題（既存） =====
+    const qScene=document.getElementById('qScene');
+    const qAnswer=document.getElementById('qAnswer');
+    const btnJudge=document.getElementById('btnJudge');
+    const btnNext=document.getElementById('btnNext');
+    const judgeMark=document.getElementById('judgeMark');
+
+    let qctx=fitCanvas(qScene), qactx=fitCanvas(qAnswer);
+    new ResizeObserver(()=>{qctx=fitCanvas(qScene); drawQuizScene();}).observe(qScene);
+    new ResizeObserver(()=>{qactx=fitCanvas(qAnswer); drawAnswer();}).observe(qAnswer);
+
+    const eightAngles=[0,45,90,135,180,225,270,315].map(d=>d*Math.PI/180);
+    let qTheta=eightAngles[Math.floor(Math.random()*8)];
+    let picks=[false,false,false,false];
+
+    function qGeom(){const r=qScene.getBoundingClientRect(); const w=Math.max(1,r.width),h=Math.max(1,r.height); const cx=w/2,cy=h/2; const R=Math.min(w,h)*0.32; const earthR=Math.min(w,h)*0.16; const moonR=Math.min(w,h)*0.040; return {w,h,cx,cy,R,earthR,moonR};}
+
+    function drawQuizScene(){ const g=qGeom(); const{w,h,cx,cy,R,earthR,moonR}=g; qctx.clearRect(0,0,w,h);
+      const bg=qctx.createLinearGradient(0,0,0,h); bg.addColorStop(0,'#ffffff'); bg.addColorStop(1,'#f3f4f6'); qctx.fillStyle=bg; qctx.fillRect(0,0,w,h);
+      drawSunRight(qctx,w,h);
+      qctx.strokeStyle='#000'; qctx.lineWidth=1.5; qctx.setLineDash([]); qctx.beginPath(); qctx.arc(cx,cy,R,0,Math.PI*2); qctx.stroke();
+      drawEarth(qctx,cx,cy,earthR);
+      const mx=cx+R*Math.cos(qTheta), my=cy-R*Math.sin(qTheta);
+      drawMoonBinary(qctx,mx,my,moonR);
+      if(showCover){ qctx.beginPath(); qctx.arc(cx,cy,R+moonR*1.2,0,Math.PI*2); qctx.strokeStyle='rgba(0,0,0,0.4)'; qctx.lineWidth=moonR*2.2; qctx.stroke(); }
+    }
+
+    function drawAnswer(){
+      const r=qAnswer.getBoundingClientRect(); const w=Math.max(1,r.width),h=Math.max(1,r.height);
+      qactx.clearRect(0,0,w,h);
+      const cx=w/2, cy=h/2, R=Math.min(w,h)*0.34;
+      const bg=qactx.createLinearGradient(0,0,0,h); bg.addColorStop(0,'#e5e7eb'); bg.addColorStop(1,'#ffffff'); qactx.fillStyle=bg; qactx.fillRect(0,0,w,h);
+      const lightCSS=getComputedStyle(document.documentElement).getPropertyValue('--moon-light').trim();
+      const darkCSS=getComputedStyle(document.documentElement).getPropertyValue('--moon-dark').trim();
+      qactx.fillStyle=darkCSS; qactx.beginPath(); qactx.arc(cx,cy,R,0,Math.PI*2); qactx.fill();
+
+      // ガイド（中央縦＋両側の曲線）
+      const bulge = R * 0.92;
+      qactx.strokeStyle = '#fff'; qactx.lineWidth = 2; qactx.setLineDash([6,6]);
+      qactx.beginPath(); qactx.moveTo(cx, cy - R); qactx.lineTo(cx, cy + R); qactx.stroke();
+      qactx.beginPath(); qactx.moveTo(cx, cy - R); qactx.bezierCurveTo(cx - bulge, cy - R*0.55, cx - bulge, cy + R*0.55, cx, cy + R); qactx.stroke();
+      qactx.beginPath(); qactx.moveTo(cx, cy - R); qactx.bezierCurveTo(cx + bulge, cy - R*0.55, cx + bulge, cy + R*0.55, cx, cy + R); qactx.stroke();
+      qactx.setLineDash([]);
+      qactx.beginPath(); qactx.arc(cx,cy,R,0,Math.PI*2); qactx.strokeStyle='#fff'; qactx.lineWidth=2; qactx.stroke();
+
+      // 4領域のPath
+      const paths = [];
+      (function(){const p=new Path2D(); p.moveTo(cx, cy - R); p.arc(cx, cy, R, -Math.PI/2, Math.PI/2, true);
+        p.bezierCurveTo(cx - bulge, cy + R*0.55, cx - bulge, cy - R*0.55, cx, cy - R); p.closePath(); paths[0]=p;})();
+      (function(){const p=new Path2D(); p.moveTo(cx, cy - R);
+        p.bezierCurveTo(cx - bulge, cy - R*0.55, cx - bulge, cy + R*0.55, cx, cy + R); p.lineTo(cx, cy - R); p.closePath(); paths[1]=p;})();
+      (function(){const p=new Path2D(); p.moveTo(cx, cy - R); p.lineTo(cx, cy + R);
+        p.bezierCurveTo(cx + bulge, cy + R*0.55, cx + bulge, cy - R*0.55, cx, cy - R); p.closePath(); paths[2]=p;})();
+      (function(){const p=new Path2D(); p.arc(cx, cy, R, -Math.PI/2, Math.PI/2, false);
+        p.bezierCurveTo(cx + bulge, cy + R*0.55, cx + bulge, cy - R*0.55, cx, cy - R); p.closePath(); paths[3]=p;})();
+      window.__qRegionPaths = paths;
+
+      qactx.fillStyle = lightCSS;
+      for(let i=0;i<4;i++) if(picks[i]) qactx.fill(paths[i]);
+    }
+
+    // ヒットテスト
+    qAnswer.addEventListener('click', e => {
+      const r = qAnswer.getBoundingClientRect();
+      const dpr = qactx.getTransform().a || (window.devicePixelRatio || 1);
+      const x = (e.clientX - r.left) * dpr, y = (e.clientY - r.top) * dpr;
+      const paths = window.__qRegionPaths || [];
+      for (let i = 0; i < paths.length; i++) {
+        if (qactx.isPointInPath(paths[i], x, y)) { picks[i] = !picks[i]; drawAnswer(); return; }
+      }
+    });
+
+    // 期待セグメント（既存ロジック）
+    function computeExpectSegments(theta){
+      const TWO=Math.PI*2; let d=theta%TWO; if(d<0)d+=TWO;
+      const f=(1-Math.cos(d))/2;
+      const eps=1e-6;
+      let k; if(f<=eps) k=0; else if(f>=1-eps) k=4; else k=Math.max(1, Math.min(3, Math.floor(f*4 + eps)));
+      const rightBright=(d>0 && d<Math.PI);
+      const expect=[false,false,false,false];
+      if(k>0){ if(rightBright){ for(let i=3;i>=4-k;i--) expect[i]=true; } else { for(let i=0;i<k;i++) expect[i]=true; } }
+      return expect;
+    }
+
+    // 効果音
+    function playTone(seq){
+      try{
+        const ac = new (window.AudioContext||window.webkitAudioContext)();
+        let t = ac.currentTime;
+        for(const [f,d] of seq){
+          const o = ac.createOscillator(), g = ac.createGain();
+          o.frequency.value = f; o.type = 'sine'; o.connect(g); g.connect(ac.destination);
+          g.gain.setValueAtTime(0.0001,t); g.gain.exponentialRampToValueAtTime(0.2,t+0.01);
+          o.start(t); g.gain.exponentialRampToValueAtTime(0.0001, t+d-0.02); o.stop(t+d); t += d + 0.02;
+        }
+      }catch{}
+    }
+    function playCorrect(){ playTone([[880,0.12],[1175,0.12]]); }
+    function playWrong(){ playTone([[196,0.18],[147,0.22]]); }
+
+    document.getElementById('btnJudge').addEventListener('click',()=>{
+      const expect=computeExpectSegments(qTheta);
+      const ok=expect.every((v,i)=>v===picks[i]);
+      judgeMark.textContent= ok ? '◯' : '✕';
+      judgeMark.style.color= ok ? '#10b981' : '#ef4444';
+      if(ok) playCorrect(); else playWrong();
+    });
+    document.getElementById('btnNext').addEventListener('click',()=>{
+      qTheta=eightAngles[Math.floor(Math.random()*8)];
+      picks=[false,false,false,false]; judgeMark.textContent='';
+      drawQuizScene(); drawAnswer();
+    });
+
+    // ===== 3) 位置あて問題（新規） =====
+    const pScene=document.getElementById('pScene');
+    const pPhase=document.getElementById('pPhase');
+    const placeJudge=document.getElementById('placeJudge');
+    let psctx=fitCanvas(pScene), ppctx=fitCanvas(pPhase);
+    new ResizeObserver(()=>{psctx=fitCanvas(pScene); drawPlaceScene();}).observe(pScene);
+    new ResizeObserver(()=>{ppctx=fitCanvas(pPhase); drawPlacePhase();}).observe(pPhase);
+
+    // 出題角（8方位からランダム）
+    let pTheta=eightAngles[Math.floor(Math.random()*8)];
+    let hitRects=[]; // 8つの□の Path/Rect
+
+    function pGeom(){const r=pScene.getBoundingClientRect(); const w=Math.max(1,r.width),h=Math.max(1,r.height); const cx=w/2,cy=h/2; const R=Math.min(w,h)*0.32; const earthR=Math.min(w,h)*0.16; return {w,h,cx,cy,R,earthR};}
+
+    function drawPlaceScene(){
+      const g=pGeom(); const {w,h,cx,cy,R,earthR}=g;
+      psctx.clearRect(0,0,w,h);
+      const bg=psctx.createLinearGradient(0,0,0,h); bg.addColorStop(0,'#ffffff'); bg.addColorStop(1,'#f3f4f6'); psctx.fillStyle=bg; psctx.fillRect(0,0,w,h);
+      drawSunRight(psctx,w,h);
+      // 軌道（黒）
+      psctx.strokeStyle='#000'; psctx.lineWidth=1.5; psctx.setLineDash([]); psctx.beginPath(); psctx.arc(cx,cy,R,0,Math.PI*2); psctx.stroke();
+      // 地球
+      drawEarth(psctx,cx,cy,earthR);
+      // カバー（任意）
+      if(showCover){ psctx.beginPath(); psctx.arc(cx,cy,R+earthR*0.25,0,Math.PI*2); psctx.strokeStyle='rgba(0,0,0,0.4)'; psctx.lineWidth=earthR*0.35; psctx.stroke(); }
+
+      // 8つの□
+      hitRects=[];
+      const size=Math.min(w,h)*0.08;
+      psctx.fillStyle='#264653'; psctx.strokeStyle='#0f172a'; psctx.lineWidth=2;
+      for(let i=0;i<8;i++){
+        const ang=eightAngles[i];
+        const x=cx+(R)*Math.cos(ang), y=cy-(R)*Math.sin(ang);
+        const rX=x-size/2, rY=y-size/2;
+        psctx.beginPath(); psctx.roundRect ? psctx.roundRect(rX,rY,size,size,8) : psctx.rect(rX,rY,size,size);
+        psctx.fill(); psctx.stroke();
+        hitRects.push({x:rX,y:rY,w:size,h:size,index:i});
+      }
+    }
+    function drawPlacePhase(){
+      const r=pPhase.getBoundingClientRect(); const w=Math.max(1,r.width),h=Math.max(1,r.height);
+      ppctx.clearRect(0,0,w,h);
+      const bg=ppctx.createLinearGradient(0,0,0,h); bg.addColorStop(0,'#e5e7eb'); bg.addColorStop(1,'#ffffff'); ppctx.fillStyle=bg; ppctx.fillRect(0,0,w,h);
+      const R=Math.min(w,h)*0.34; const cx=w/2, cy=h/2; drawMoon(ppctx,cx,cy,R, (pTheta-SUN_DIR)%(Math.PI*2) );
+    }
+
+    // クリック判定
+    pScene.addEventListener('click',(e)=>{
+      const r=pScene.getBoundingClientRect(), x=e.clientX-r.left, y=e.clientY-r.top;
+      const rect=hitRects.find(rr=>x>=rr.x && x<=rr.x+rr.w && y>=rr.y && y<=rr.y+rr.h);
+      if(!rect) return;
+      const correctIndex = eightAngles.findIndex(a=>a===pTheta);
+      if(rect.index===correctIndex){
+        placeJudge.textContent='◯'; placeJudge.style.color='#10b981'; playCorrect();
+        setTimeout(()=>{ // 次の問題へ
+          pTheta=eightAngles[Math.floor(Math.random()*8)];
+          placeJudge.textContent='';
+          drawPlacePhase();
+        },650);
+      }else{
+        placeJudge.textContent='✕'; placeJudge.style.color='#ef4444'; playWrong();
+        // 当てるまで次へ進まない（何もしない）
+      }
+    });
+
+    // ===== 共通ユーティリティ =====
+    function resizeAll(){
+      ctx=fitCanvas(scene); pctx=fitCanvas(phase);
+      qctx=fitCanvas(qScene); qactx=fitCanvas(qAnswer);
+      psctx=fitCanvas(pScene); ppctx=fitCanvas(pPhase);
+      drawAll(); drawQuizScene(); drawAnswer(); drawPlaceScene(); drawPlacePhase();
+    }
+
+    // 色ぬり問題：初期描画
+    drawQuizScene(); drawAnswer();
+    // 位置あて問題：初期描画
+    drawPlaceScene(); drawPlacePhase();
+
+    // 初期表示：シミュレーター
+    setMode('sim');
+  }
+})();
+</script>
+</body>
+</html>
